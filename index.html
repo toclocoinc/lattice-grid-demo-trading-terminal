@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>Trading Terminal Demo - Lattice Grid</title>
+        <script>
+            // Where the library comes from. `false` loads the published release from the CDN;
+            // `true` loads a local build from vendor/ instead, for trying an unreleased fix.
+            const LOCAL = false;
+            const LIB = LOCAL ? 'vendor/' : 'https://cdn.jsdelivr.net/npm/@toclocoinc/lattice-grid@1.73.0/';
+            document.write('<link rel="stylesheet" href="' + LIB + 'lattice-grid.min.css">');
+            for (const file of ['lattice-grid.min.js', 'modules/layout.min.js', 'modules/data-router.min.js',
+                'modules/charts.min.js', 'modules/kpi.min.js']) {
+                document.write('<script src="' + LIB + file + '"><' + '/script>');
+            }
+        </script>
+        <style>
+            /* The grid's own theme tokens, set on the page so the layout windows and the
+               charts inside them take the theme too - a chart is not inside a grid root,
+               so it reads these from here. Values are the shipped light/dark ones.
+               The `--lat-layout-chrome-*` family is the layout module's four-rung chain:
+               naming the first rung outranks the module's own dark rung, which lifts the
+               chrome to a bright indigo (#4E5ED6) that reads as a highlight on this page. */
+            body[data-theme="dark"] {
+                --lattice-background: #14181c; --lattice-surface: #1b2026; --lattice-surface-alt: #171c21;
+                --lattice-foreground: #e4e9ee; --lattice-foreground-muted: #99a4ae;
+                --lattice-border-color: #2a3138; --lattice-border-strong: #3a434c;
+                --lattice-overlay-background: rgba(20,24,28,.72);
+                --lat-layout-chrome-bg: #222a35; --lat-layout-chrome-ink: #e6edf3;
+                --lat-layout-chrome-ink-muted: #9fb0c0; --lat-layout-chrome-hover: #2f3a47;
+                --lat-layout-border: #39424d;
+                --lat-kpi-bg: transparent; --lat-kpi-border: transparent; --lat-kpi-muted: #99a4ae;
+            }
+            body[data-theme="light"] {
+                --lattice-background: #ffffff; --lattice-surface: #f7f8f9; --lattice-surface-alt: #fbfbfc;
+                --lattice-foreground: #1c2126; --lattice-foreground-muted: #5b6670;
+                --lattice-border-color: #dfe3e6; --lattice-border-strong: #c3cad0;
+                --lattice-overlay-background: rgba(255,255,255,.82);
+                --lat-kpi-bg: transparent; --lat-kpi-border: transparent; --lat-kpi-muted: #5b6670;
+            }
+            body { padding: 0; margin: 0; background: var(--lattice-background); color: var(--lattice-foreground);
+                   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+            [data-lat-layout-body] { overflow: hidden; background: var(--lattice-background); color: var(--lattice-foreground); }
+
+            /* Every window is chromeless, so each panel carries its own small heading. */
+            .panel { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding: 4px 8px 2px; }
+            .panel__head { flex: 0 0 auto; display: flex; align-items: baseline; justify-content: space-between;
+                           gap: 8px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+                           color: var(--lattice-foreground-muted); padding: 0 2px 3px; }
+            .panel__head b { font-size: 13px; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+            .panel__body { flex: 1 1 auto; min-height: 0; position: relative; }
+
+            /* The top strip: quote, controls, funds. */
+            #topbar-body { display: flex; align-items: center; gap: 16px; padding: 0 10px 0 14px; height: 100%; box-sizing: border-box; overflow: hidden; }
+            .top__quote { display: flex; align-items: center; gap: 12px; min-width: 0; }
+            .top__sym { font-size: 20px; font-weight: 700; line-height: 1.1; }
+            .top__co { font-size: 11px; color: var(--lattice-foreground-muted); }
+            .top__last { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+            .top__move { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+            .top__controls { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: 12px; }
+            .top__controls .label { color: var(--lattice-foreground-muted); text-transform: uppercase; letter-spacing: .06em; font-size: 10px; }
+            .top__controls button, .top__controls select { font: inherit; padding: 3px 9px; border-radius: 4px; cursor: pointer;
+                background: transparent; color: inherit; border: 1px solid var(--lattice-border-strong); }
+            .top__controls button.on { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+            /* The corner tile: the KPI panel's own auto-fit grid wraps its tiles into a
+               column when the corner is narrow, which makes the strip taller than the
+               window. One row of three, sized to their own text, instead. */
+            .top__funds { text-align: right; flex: 0 0 auto; }
+            .top__quote, .top__controls { min-width: 0; }
+            .top__funds .lat-kpi { display: flex; align-items: baseline; gap: 14px; }
+            .top__funds .lat-kpi__tile { flex: 0 0 auto; display: block; text-align: right; }
+            .top__funds .lat-kpi__tile { padding: 0; border: 0; }
+            .top__funds .lat-kpi__value { font-size: 13px; font-weight: 600; }
+            .top__funds .lat-kpi__label { font-size: 10px; }
+
+            /* The price panel: candles over volume, one pane, with the readout drawn over it
+               and 44px of empty gutter on the left for the annotation rail (card 1474). */
+            .price { display: flex; flex-direction: column; gap: 0; padding-left: 44px; }
+            .price__candles { flex: 3 1 0; min-height: 0; }
+            .price__volume { flex: 1 1 0; min-height: 0; }
+            .price__read { position: absolute; left: 100px; top: 2px; z-index: 2; pointer-events: none;
+                           font-size: 11px; font-variant-numeric: tabular-nums; display: flex; gap: 12px; align-items: baseline; }
+            .price__read .sym { font-size: 13px; font-weight: 700; }
+            .price__read b { font-weight: 600; color: var(--lattice-foreground-muted); margin-right: 3px; }
+
+            /* A signal panel: the segmented bar with a triangle marker above it. */
+            .sig { padding-top: 9px; }
+            .sig__chart { position: absolute; inset: 9px 0 0; }
+            .sig__mark { position: absolute; top: 0; width: 0; height: 0; border-left: 5px solid transparent;
+                         border-right: 5px solid transparent; border-top: 7px solid var(--lattice-foreground); }
+
+            .up { color: #2ea043; } .down { color: #f85149; } .flat { color: var(--lattice-foreground-muted); }
+
+            /* A ticker's initial-letter glyph. */
+            .sym { display: inline-flex; align-items: center; gap: 7px; }
+            .sym__badge { width: 18px; height: 18px; border-radius: 4px; flex: none; color: #fff;
+                          font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+            .top__quote .sym__badge { width: 26px; height: 26px; font-size: 15px; border-radius: 6px; }
+        </style>
+        <script src="data.js"></script>
+    </head>
+    <body data-theme="dark">
+        <div id="container" style="height: 100vh; margin: 0; padding: 0"></div>
+        <script>
+            // Bound to toclocoinc.github.io; does nothing anywhere else. localhost never needs a key.
+            LatticeGrid.setLicence('LG1.eyJ2IjoxLCJwIjoibGF0dGljZS1ncmlkIiwidCI6IlRPQ0xPQ08gSW5jIC0gcHVibGljIGRlbW9zIiwiZSI6IjIwMzAtMDEtMDEiLCJkIjpbInRvY2xvY29pbmMuZ2l0aHViLmlvIl19.9De42ua3aCGpiMB6EVRP7Tv-upUlDI-0T07rlSPzvCrsqg8t4YJi7SRnStEpAg48uzmcG7il1fR_TfwkUE7iCA');
+
+        <script>
+            // ---- Panel declarations --------------------------------------
+            // Column sets, formatting rules, the ticker palette and the signal bands.
+
+            /** Green above the line, red below it, on every move column alike. */
+            const MOVE = [
+                { id: 'up', label: 'Up on the session', when: { op: 'gte', value: 0 }, style: { color: '#2ea043', fontWeight: '600' } },
+                { id: 'down', label: 'Down on the session', when: { op: 'lt', value: 0 }, style: { color: '#f85149', fontWeight: '600' } },
+            ];
+            /** Prices run from 62,000 to 0.13, so the decimals follow the number. */
+            const PRICE = { minDecimals: 2, maxDecimals: 5 };
+            const RULES = { chg: MOVE, chgPct: MOVE, chg15: MOVE };
+
+            /** One colour per ticker, filled by the wiring script and read by the glyph
+                and by the peer chart, so a ticker is the same colour wherever it appears. */
+            const TINT = {};
+            /** Hues a third of a turn apart, so neighbours in the list never look alike,
+                at a lightness that reads on both the dark and the light theme. */
+            const hue = (i) => `hsl(${Math.round((i * 137.508) % 360)} ${i % 2 ? 70 : 55}% ${i % 3 === 0 ? 58 : 48}%)`;
+
+            /**
+             * The ticker cell: an initial-letter glyph, then the code.
+             *
+             * A renderer CLASS, not a `RenderFn`: a function's return value replaces the
+             * cell's DOM on every refresh, and with a live feed refreshing several times a
+             * second a real mouse press and release straddle that replacement, so the click
+             * never reaches the row. `refresh` returning true keeps the same elements.
+             */
+            class GlyphRenderer {
+                /** @param {object} p the cell @returns {void} */
+                init(p) {
+                    this.root = document.createElement('span');
+                    this.root.className = 'sym';
+                    this.badge = document.createElement('span');
+                    this.badge.className = 'sym__badge';
+                    this.code = document.createElement('span');
+                    this.root.append(this.badge, this.code);
+                    this.write(p);
+                }
+                /** @returns {HTMLElement} the cell's element */
+                element() { return this.root; }
+                /** @param {object} p the cell @returns {boolean} always true: updated in place */
+                refresh(p) { this.write(p); return true; }
+                /** @param {object} p the cell @returns {void} */
+                write(p) {
+                    const v = String(p.value === null || p.value === undefined ? '' : p.value);
+                    if (this.code.textContent === v) return;
+                    this.code.textContent = v;
+                    this.badge.textContent = v.slice(0, 1);
+                    this.badge.style.background = TINT[v] || '#6e7781';
+                }
+            }
+
+            /**
+             * A signed number, printed with a true minus sign.
+             *
+             * The formatted text is correct already (U+002D HYPHEN-MINUS), but at 14px in a
+             * narrow column that glyph is a short stub that reads as a dot. U+2212 is the
+             * typographic minus: full digit width, on the digit's own midline. A class, not
+             * a function, for the same click reason as the glyph above.
+             */
+            class SignedRenderer {
+                /** @param {object} p the cell @returns {void} */
+                init(p) { this.root = document.createElement('span'); this.write(p); }
+                /** @returns {HTMLElement} the cell's element */
+                element() { return this.root; }
+                /** @param {object} p the cell @returns {boolean} always true */
+                refresh(p) { this.write(p); return true; }
+                /** @param {object} p the cell @returns {void} */
+                write(p) { this.root.textContent = String(p.text || '').replace('-', '−'); }
+            }
+
+            /** The columns every quote panel shares, plus whatever it adds.
+                A narrow panel (`chg: false`) drops the absolute move and keeps the percentage. */
+            const quoteColumns = (extra, chg) => [
+                { field: 'symbol', title: 'Ticker', headerControls: 'none', layout: { width: 82 }, cell: { render: GlyphRenderer } },
+                { field: 'last', title: 'Last', headerControls: 'none', type: 'number', format: PRICE, layout: { flex: 1 } },
+            ].concat(chg === false ? [] : [
+                { field: 'chg', title: 'Chg', headerControls: 'none', type: 'number', format: PRICE, layout: { width: 70 }, cell: { render: SignedRenderer } },
+            ], [
+                { field: 'chgPct', title: '%Chg', headerControls: 'none', type: 'number', format: { decimals: 2, suffix: '%' }, layout: { width: 70 }, cell: { render: SignedRenderer } },
+            ], extra || [], [
+                { field: 'trend', title: '', headerControls: 'none', layout: { width: 50 },
+                  sort: { enabled: false }, filter: { enabled: false },
+                  // `label: false` leaves the sparkline the whole cell; the number is already in Last.
+                  cell: { render: 'line', props: { label: false } } },
+            ]);
+
+            /** News, beta and analyst readings: the dataset has none, so they are
+                seeded from the ticker string - the same ticker always reads the same. */
+            const seeded = (s, salt) => {
+                let h = 2166136261;
+                for (const ch of s + salt) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+                return ((h >>> 0) % 10000) / 10000;
+            };
+
+            /**
+             * The three segmented bars under the price pane.
+             *
+             * Each is a stacked `horizontalBar` of three bands - poor, neutral, good - drawn
+             * 0..100 whatever the reading's own scale, with the axis stating what that
+             * means. The reading is a triangle above the bar, placed from the drawn bars'
+             * own geometry: a chart annotation cannot mark a value on a horizontalBar's
+             * measure axis at all (F-TRADE-G), so the marker is the page's own element
+             * rather than a fake segment inside the data.
+             */
+            const BANDS = (a, b) => [
+                { signal: '', band: 'poor', w: a },
+                { signal: '', band: 'fair', w: b - a },
+                { signal: '', band: 'good', w: 100 - b },
+            ];
+            const SIGNALS = [
+                { id: 'sentiment', label: 'News sentiment', field: 'sentiment', bands: BANDS(33, 66),
+                  to: (v) => v, format: (v) => String(Math.round(Number(v))),
+                  read: (v) => [v + '% ' + (v >= 66 ? 'positive' : v >= 33 ? 'neutral' : 'negative'), v >= 66 ? 'up' : v >= 33 ? 'flat' : 'down'] },
+                { id: 'beta', label: 'Beta vs index', field: 'beta', bands: BANDS(37.5, 62.5),
+                  to: (v) => ((v + 2) / 4) * 100, format: (v) => (((Number(v) / 100) * 4) - 2).toFixed(1),
+                  read: (v) => [(v >= 0 ? '+' : '−') + Math.abs(v).toFixed(2), v >= 0.5 ? 'up' : v <= -0.5 ? 'down' : 'flat'] },
+                { id: 'analyst', label: 'Analyst recommendation', field: 'analyst', bands: BANDS(33, 66),
+                  to: (v) => v, format: (v) => String(Math.round(Number(v))),
+                  read: (v) => [v >= 66 ? 'Buy' : v >= 33 ? 'Hold' : 'Sell', v >= 66 ? 'up' : v >= 33 ? 'flat' : 'down'] },
+            ];
+
+            /** Every window is chromeless: no title bars, a heading inside each panel, and
+                the layout's own handlebar grip as the keyboard and pointer handle. */
+            const WINDOWS = [
+                { id: 'watchlist', title: 'Watchlist', xPos: 1, yPos: 1, xSize: 4, ySize: 7, chrome: false, movable: true, resizable: true },
+                { id: 'trending', title: 'Trending', xPos: 1, yPos: 8, xSize: 4, ySize: 7, chrome: false, movable: true, resizable: true },
+                { id: 'active', title: 'Most active', xPos: 1, yPos: 15, xSize: 4, ySize: 6, chrome: false, movable: true, resizable: true },
+
+                { id: 'topbar', title: 'Quote', xPos: 5, yPos: 1, xSize: 16, ySize: 2, chrome: false, movable: false, resizable: false },
+                { id: 'price', title: 'Price', xPos: 5, yPos: 3, xSize: 16, ySize: 7, chrome: false, movable: true, resizable: true },
+
+                { id: 'sentiment', title: 'News sentiment', xPos: 5, yPos: 10, xSize: 5, ySize: 2, chrome: false, movable: true, resizable: true },
+                { id: 'beta', title: 'Beta vs index', xPos: 10, yPos: 10, xSize: 5, ySize: 2, chrome: false, movable: true, resizable: true },
+                { id: 'analyst', title: 'Analyst recommendation', xPos: 15, yPos: 10, xSize: 6, ySize: 2, chrome: false, movable: true, resizable: true },
+
+                { id: 'peers', title: 'Peer performance', xPos: 5, yPos: 12, xSize: 8, ySize: 9, chrome: false, movable: true, resizable: true },
+                { id: 'spread', title: 'Price spread', xPos: 13, yPos: 12, xSize: 8, ySize: 9, chrome: false, movable: true, resizable: true },
+            ];
+
+            /** A row of small toggle buttons; the picked one carries the `on` class. */
+            const buttons = (host, items, active, onPick) => {
+                const made = items.map(([label, value]) => {
+                    const b = document.createElement('button');
+                    b.textContent = label;
+                    b.className = value === active ? 'on' : '';
+                    b.onclick = () => { made.forEach((o) => { o.className = ''; }); b.className = 'on'; onPick(value); };
+                    host.appendChild(b);
+                    return b;
+                });
+            };
+            /** A stable top for the volume axis: the window's peak rounded up to a step, so
+                a candle rolling off does not rescale every bar and reflow the axis gutter. */
+            const STEPS = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+            const niceMax = (v) => {
+                if (!(v > 0)) return 1;
+                const e = Math.pow(10, Math.floor(Math.log10(v)));
+                return (STEPS.find((x) => (v / e) <= x) || 10) * e;
+            };
+            /** A price as the terminal prints it, with a true minus sign. */
+            const price = (v) => (v === undefined || v === null ? '-'
+                : v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 5 }).replace('-', '−'));
+
+            /**
+             * The heatmap's colour ramp, one per theme.
+             *
+             * A heatmap takes its ramp from the resolved scheme's `sequential` pair, and
+             * the default pair starts at near-white (#ecf3f9), which on a dark page makes
+             * a panel of low cells read as blank paper. These are registered schemes of
+             * the same shape as the built-in ones - `series` for the categorical palette,
+             * `sequential` for the ramp - so the chart's own `scheme` option carries them.
+             */
+            const RAMPS = {
+                dark: { sequential: ['#2b2154', '#f0b429'] },
+                light: { sequential: ['#cfc7ea', '#f08c00'] },
+            };
+
+            /** A time-axis tick as the clock reads it: UTC, like the session and the header. */
+            const hhmm = (v) => new Date(Number(v)).toISOString().slice(11, 16);
+
+            /** The time ranges the main chart offers, in minutes, and the one it opens on. */
+            const RANGES = [['30m', 30], ['1H', 60], ['2H', 120], ['4H', 240]];
+            const START_RANGE = 30;
+            /** One-minute candles at every range: on a continuous time axis (1481/1483) the
+                domain moves with the clock, so the pane pans a fraction of a candle per tick
+                and no longer needs a short bar interval to look alive. */
+            const BAR_SECONDS = 60;
+
+            /** The candle feed's columns, shared by the grids that hold candles. The session
+                is a UTC session and the clock reads UTC, so each timestamp column names the
+                zone itself - the grid-level `timeZone` renders every formatted column as a
+                date instead (F-TRADE-H). */
+            const CANDLE_COLUMNS = (pattern) => [
+                { field: 'at', title: 'Time', type: 'timestamp', format: { pattern: pattern || 'HH:mm', timeZone: 'UTC' } },
+                { field: 'symbol', title: 'Ticker' }, { field: 'company', title: 'Company' },
+                { field: 'open', title: 'Open', type: 'number', format: PRICE },
+                { field: 'high', title: 'High', type: 'number', format: PRICE },
+                { field: 'low', title: 'Low', type: 'number', format: PRICE },
+                { field: 'close', title: 'Close', type: 'number', format: PRICE },
+                { field: 'volume', title: 'Volume', type: 'number', format: { decimals: 2 } },
+                { field: 'trades', title: 'Trades', type: 'number' },
+                { field: 'pct', title: '% since 08:00', type: 'number', format: { decimals: 2, suffix: '%' } },
+                { field: 'spread', title: 'High-low', type: 'number', format: { decimals: 3, suffix: '%' } },
+                { field: 'dir', title: 'Direction' },
+                { field: 'm5', title: '5 min', type: 'timestamp', format: { pattern: 'HH:mm', timeZone: 'UTC' } },
+            ];
+
+            /** The five-minute bucket columns, shared by the peer chart and the heatmap. */
+            const BUCKET_COLUMNS = () => [
+                { field: 'symbol', title: 'Ticker' },
+                { field: 'm5', title: 'Time', type: 'timestamp', format: { pattern: 'HH:mm', timeZone: 'UTC' } },
+                { field: 'pct', title: '% since 08:00', type: 'number', format: { decimals: 2, suffix: '%' } },
+                { field: 'spread', title: 'High-low', type: 'number', format: { decimals: 3, suffix: '%' } },
+            ];
+        </script>
+        <script>
+            // ---- Wiring --------------------------------------------------
+            const body = (id) => document.getElementById(id + '-body');
+            const grids = [];
+            const charts = [];
+            const data = TradingData.create({ dataDir: 'data' });          // built BEFORE any attach
+            const view = { symbol: data.tickers[0], span: START_RANGE * 60000, theme: 'dark', top: 0 };
+            data.tickers.forEach((t, i) => { TINT[t] = hue(i); });
+
+            LatticeGridLayout.createLayout(document.getElementById('container'), {
+                columns: 20, rows: 20, gap: 6, padding: 0, overflowX: 'static', overflowY: 'static', windows: WINDOWS,
+            });
+
+            /** A chromeless panel: its heading inside, at the top left, and the body under it. */
+            const panel = (id, heading, reading) => {
+                const el = body(id);
+                el.className = 'panel';
+                el.innerHTML = '<div class="panel__head"><span>' + heading + '</span>' + (reading ? '<b></b>' : '') + '</div>'
+                    + '<div class="panel__body"></div>';
+                return el.lastChild;
+            };
+            /** Build a grid, remember it so the theme toggle can reach it. */
+            const grid = (el, config) => {
+                const g = el ? LatticeGrid.createGrid(el, Object.assign({ theme: view.theme }, config))
+                    : LatticeGrid.createHeadlessGrid(config);
+                grids.push(g);
+                return g;
+            };
+            /** Draw a chart, remember it, and give its root the page's theme. */
+            const chart = (spec) => {
+                const c = LatticeGrid.createChart(spec);
+                c.element.setAttribute('data-theme', view.theme);
+                charts.push(c);
+                return c;
+            };
+
+            // 1. The feed's own grid: every ticker's minute candles, and the index.
+            const candles = grid(null, { rowKey: 'id', columns: CANDLE_COLUMNS() });
+            data.router.attach(candles, 'candle1m');                        // attach BEFORE start()
+
+            // 2. One summary row per ticker, computed by the router's own rollup.
+            const summary = grid(null, { rowKey: 'symbol', formatting: RULES, columns: quoteColumns([
+                { field: 'chg15', type: 'number' }, { field: 'chg15Abs', type: 'number' },
+                { field: 'volume', type: 'number' }, { field: 'company' }, { field: 'at', type: 'timestamp' },
+            ]) });
+            data.router.attach(summary, 'candle1m', data.summaryRoute());    // attach BEFORE start()
+
+            // 3. The three list panels: all three derive from that one summary.
+            const list = (id, heading, source, extra) => {
+                const g = grid(panel(id, heading), { rowKey: 'symbol', selection: 'single', density: 'comfortable',
+                    formatting: RULES, source, columns: quoteColumns(extra, !extra) });
+                g.on('row:clicked', (e) => select(e.key));
+                return g;
+            };
+            list('watchlist', 'Watchlist', { mode: 'derived', from: summary, where: (r) => data.watchlist.includes(r.symbol), sort: [{ col: 'symbol', dir: 'asc' }] });
+            list('trending', 'Trending &middot; 15 min', { mode: 'derived', from: summary, sort: [{ col: 'chg15Abs', dir: 'desc' }], limit: 10 },
+                [{ field: 'chg15', title: '15m', headerControls: 'none', type: 'number', format: { decimals: 2, suffix: '%' }, layout: { width: 62 }, cell: { render: SignedRenderer } }]);
+            list('active', 'Most active', { mode: 'derived', from: summary, sort: [{ col: 'volume', dir: 'desc' }], limit: 10 },
+                [{ field: 'volume', title: 'Vol', headerControls: 'none', type: 'number', format: { decimals: 0, notation: 'compact' }, layout: { width: 58 } }]);
+
+            // 4. The price pane: ONE rolled row set, candles over volume with no gap, the
+            //    readout drawn over the plot, and 44px of gutter kept clear on the left.
+            body('price').className = 'panel';
+            body('price').innerHTML = '<div class="panel__body price">'
+                + '<div class="price__read"><span class="sym"></span><span><b>O</b><i></i></span><span><b>H</b><i></i></span>'
+                + '<span><b>L</b><i></i></span><span><b>C</b><i></i></span><span><b>Vol</b><i></i></span></div>'
+                + '<div class="price__candles"></div><div class="price__volume"></div></div>';
+            // The feed publishes the selected ticker resampled to the interval the range
+            // needs and keeps exactly that window, so a slot arrives - and the oldest
+            // leaves - several times a second and the pane slides instead of re-labelling.
+            const main = grid(null, { rowKey: 'id', columns: CANDLE_COLUMNS('HH:mm') });
+            data.router.attach(main, 'bar', { sort: { key: 'at', dir: 'asc' } });   // attach BEFORE start()
+            /** The domain both panes show: a rolling window ending at the REPLAY clock.
+                The price pane draws no time labels: the pair shares one time axis, at the
+                bottom under the volume bars, which is where a terminal reads it.
+                (1483's `window.now`), re-read on each `update` so the pane pans per tick.
+                `format` is given because a continuous axis labels in the viewer's own zone
+                and this session is UTC (1484). */
+            const domain = (extra) => Object.assign({ scale: 'time', ticks: 8, format: hhmm,
+                window: { kind: 'time', span: view.span, now: () => data.replay.now() } }, extra);
+            const candlestick = chart({ grid: main, container: document.querySelector('.price__candles'), type: 'candlestick', x: 'at',
+                measures: [{ col: 'open', fn: 'last' }, { col: 'high', fn: 'max' }, { col: 'low', fn: 'min' }, { col: 'close', fn: 'last' }],
+                axis: { x: domain({ labels: false }), y: { position: 'right' } } });
+            const volume = chart({ grid: main, container: document.querySelector('.price__volume'), type: 'bar', x: 'at', y: 'volume', series: 'dir',
+                stack: true, axis: { x: domain(), y: { min: 0, max: 1, position: 'right' } },
+                scheme: { up: '#2ea043', down: '#f85149' }, legend: false, margin: { top: 2, bottom: 2 } });
+
+            /** Pan both panes to the clock, and keep the volume axis's own scale still. */
+            const reslice = () => {
+                candlestick.update({ axis: { x: domain({ labels: false }), y: { position: 'right' } } });
+                volume.update({ axis: { x: domain(), y: { min: 0, max: view.top || 1, position: 'right' } } });
+                let peak = 0;
+                for (let i = 0; i < main.rows.count(); i += 1) {
+                    const v = Number(main.rows.get(i).data.volume) || 0;
+                    if (v > peak) peak = v;
+                }
+                const top = niceMax(peak);
+                if (top !== view.top) {
+                    view.top = top;
+                    volume.update({ axis: { x: domain(), y: { min: 0, max: top, position: 'right' } } });
+                }
+            };
+
+            // 5. The bottom row: peers and the spread heatmap, equal halves.
+            const buckets = grid(null, { rowKey: '__key', source: { mode: 'derived', from: candles,
+                groupBy: ['symbol', 'm5'], select: { pct: { of: 'pct', fn: 'last' }, spread: { of: 'spread', fn: 'avg' } } },
+                columns: BUCKET_COLUMNS() });
+            const peers = chart({ grid: buckets, container: panel('peers', 'Peer performance vs index &middot; % since 08:00'),
+                type: 'line', x: 'm5', y: 'pct', series: 'symbol',
+                legend: { position: 'bottom' }, scheme: peerScheme(), axis: { x: { format: hhmm } } });
+            // Exactly the minutes inside the range, re-cut on the clock: the oldest column
+            // drops as a new one arrives rather than the panel growing all session.
+            const heat = grid(null, { rowKey: 'id', source: { mode: 'derived', from: candles, refresh: 'manual',
+                where: (r) => r.symbol !== data.index && r.at >= data.replay.now() - view.span },
+                columns: CANDLE_COLUMNS() });
+            LatticeGrid.registerScheme('spread-dark', RAMPS.dark);
+            LatticeGrid.registerScheme('spread-light', RAMPS.light);
+            const heatChart = chart({ grid: heat, container: panel('spread', 'Price spread across peers'), type: 'heatmap',
+                scheme: 'spread-' + view.theme,
+                x: 'at', series: 'symbol', y: 'spread',
+                // 24 rows in a half-width panel: every ticker has a band 9px tall, and a
+                // line of text needs more than that, so the chart labels every second one.
+                font: { size: 10 } });
+
+            // 6. The three signal panels, side by side under the price pane.
+            const signals = grid(null, { rowKey: 'symbol', rows: data.tickers.map((s) => ({ symbol: s,
+                sentiment: Math.round(seeded(s, 'news') * 100),
+                beta: Math.round((seeded(s, 'beta') * 4 - 2) * 100) / 100,
+                analyst: Math.round(seeded(s, 'rec') * 100) })),
+                columns: [{ field: 'symbol' }, { field: 'sentiment', type: 'number' },
+                    { field: 'beta', type: 'number', format: { decimals: 2 } }, { field: 'analyst', type: 'number' }] });
+            for (const s of SIGNALS) {
+                const host = panel(s.id, s.label, true);
+                host.className = 'panel__body sig';
+                host.innerHTML = '<div class="sig__mark"></div><div class="sig__chart"></div>';
+                s.readout = body(s.id).querySelector('.panel__head b');
+                s.mark = host.firstChild;
+                s.grid = grid(null, { rowKey: 'band', rows: s.bands,
+                    columns: [{ field: 'signal' }, { field: 'band' }, { field: 'w', type: 'number' }] });
+                s.chart = chart({ grid: s.grid, container: host.lastChild, type: 'horizontalBar', x: 'signal', y: 'w',
+                    series: 'band', stack: true, legend: false, tooltip: false,
+                    scheme: { poor: '#c02c38', fair: '#6e7781', good: '#1a7f37' },
+                    axis: { y: { min: 0, max: 100, ticks: 5, format: s.format } },
+                    margin: { left: 6, right: 18, top: 2 } });
+            }
+            /** Put each triangle over its reading, measured from the bars the chart drew. */
+            const paintSignals = () => {
+                for (const s of SIGNALS) {
+                    const v = signals.rows.value(view.symbol, s.field);
+                    if (v === undefined || v === null) continue;
+                    const [text, tone] = s.read(v);
+                    s.readout.textContent = text;
+                    s.readout.className = tone;
+                    const bars = s.chart.element.querySelectorAll('.lat-chartview__bar');
+                    if (!bars.length) continue;
+                    const from = bars[0].getBoundingClientRect().left;
+                    const to = bars[bars.length - 1].getBoundingClientRect().right;
+                    const host = s.mark.parentElement.getBoundingClientRect();
+                    s.mark.style.left = Math.round(from - host.left + ((to - from) * s.to(v)) / 100 - 5) + 'px';
+                }
+            };
+
+            // 7. The top strip: the quote at the left, the controls, and Funds in the corner.
+            const topbar = body('topbar');
+            topbar.innerHTML = '<div class="top__quote"><span class="sym__badge"></span>'
+                + '<div><div class="top__sym"></div><div class="top__co"></div></div>'
+                + '<div class="top__last"></div><div class="top__move"></div></div>'
+                + '<div class="top__controls"><span id="ranges"></span>'
+                + '<span class="label">Speed</span><select id="speed"></select>'
+                + '<button id="play">Pause</button><button id="theme">Light</button></div>'
+                + '<div class="top__funds"><div id="funds"></div></div>';
+            const fundsKpi = LatticeGridKPI.createKPI(document.getElementById('funds'), { rowKey: 'symbol', columns: 3, tiles: [
+                { id: 'funds', label: 'Funds', aggregation: 'custom', compute: () => 1284500, format: { type: 'currency', currency: 'USD', decimals: 0 } },
+                { id: 'up', label: 'Adv', aggregation: 'count', filter: (r) => r.chgPct > 0 },
+                { id: 'down', label: 'Dec', aggregation: 'count', filter: (r) => r.chgPct < 0 }] });
+            data.router.attach(fundsKpi, 'candle1m', data.summaryRoute());   // attach BEFORE start()
+
+            buttons(document.getElementById('ranges'), RANGES, START_RANGE, (m) => {
+                view.span = m * 60000;
+                data.bars(BAR_SECONDS, view.span);
+                heat.rows.load();
+                reslice();
+            });
+            const speed = document.getElementById('speed');
+            speed.innerHTML = data.speeds.map((s) => '<option value="' + s + '"' + (s === data.replay.rate() ? ' selected' : '') + '>' + s + 'x</option>').join('');
+            speed.onchange = () => data.replay.speed(Number(speed.value));
+            const play = document.getElementById('play');
+            play.onclick = () => {
+                if (data.replay.playing()) data.replay.pause(); else data.replay.play();
+                play.textContent = data.replay.playing() ? 'Pause' : 'Play';
+            };
+            document.getElementById('theme').onclick = (e) => {
+                view.theme = view.theme === 'dark' ? 'light' : 'dark';
+                e.target.textContent = view.theme === 'dark' ? 'Light' : 'Dark';
+                document.body.dataset.theme = view.theme;
+                grids.forEach((g) => g.set('theme', view.theme));
+                charts.forEach((c) => { c.element.setAttribute('data-theme', view.theme); c.draw(); });
+                peers.update({ scheme: peerScheme() });
+                heatChart.update({ scheme: 'spread-' + view.theme });
+                paintSignals();
+            };
+
+            // 8. The quote strip and the readout over the plot.
+            const read = document.querySelector('.price__read');
+            /** Paint the top strip and the in-plot readout from one candle. */
+            const headline = (row) => {
+                if (!row) return;
+                const chg = summary.rows.value(row.symbol, 'chg');
+                const pct = summary.rows.value(row.symbol, 'chgPct');
+                topbar.querySelector('.sym__badge').textContent = row.symbol.slice(0, 1);
+                topbar.querySelector('.sym__badge').style.background = TINT[row.symbol] || '#6e7781';
+                topbar.querySelector('.top__sym').textContent = row.symbol;
+                topbar.querySelector('.top__co').textContent = data.company(row.symbol);
+                topbar.querySelector('.top__last').textContent = price(row.close);
+                const move = topbar.querySelector('.top__move');
+                move.textContent = (chg >= 0 ? '+' : '') + price(chg) + '  (' + (pct >= 0 ? '+' : '−') + Math.abs(pct || 0).toFixed(2) + '%)';
+                move.className = 'top__move ' + (chg >= 0 ? 'up' : 'down');
+                read.querySelector('.sym').textContent = row.symbol;
+                const cells = read.querySelectorAll('i');
+                [row.open, row.high, row.low, row.close].forEach((v, i) => { cells[i].textContent = price(v); });
+                cells[4].textContent = (row.volume || 0).toFixed(2);
+            };
+            /** The candle the chart is showing last, or the one under the pointer. */
+            const latest = () => (main.rows.count() ? main.rows.get(main.rows.count() - 1).data : null);
+            candlestick.on('hover', (e) => {
+                const row = e.rowKeys && e.rowKeys.length ? main.rows.byKey(e.rowKeys[0]) : null;
+                if (row) headline(row.data);
+            });
+            candlestick.on('leave', () => headline(latest()));
+
+            /** Follow a ticker: the pane, the signals, the quote and the peer highlight. */
+            function select(symbol) {
+                view.symbol = symbol;
+                data.select(symbol);
+                peers.update({ scheme: peerScheme() });
+                heat.rows.load();
+                reslice();
+                paintSignals();
+                headline(latest());
+            }
+            /** The peer chart's colours: every ticker its own hue, the index near the page's
+                ink, the selected ticker amber. */
+            function peerScheme() {
+                const out = Object.assign({}, TINT);
+                out[data.index] = view.theme === 'dark' ? '#f0f6fc' : '#161b22';
+                out[view.symbol] = '#f0b429';
+                return out;
+            }
+
+            // The triangles are measured from the bars the chart drew, so they are
+            // re-placed on the same beat as everything else rather than once.
+            // The heatmap is 24 rows by up to 240 columns, so it slides on a one-second
+            // beat rather than on every frame; everything else follows the clock.
+            let heatAt = 0;
+            data.on('tick', () => {
+                reslice();
+                headline(latest());
+                paintSignals();
+                const now = performance.now();
+                if (now - heatAt >= 1000) { heatAt = now; heat.rows.load(); }
+            });
+            window.addEventListener('resize', paintSignals);
+            data.start().then(() => {
+                data.bars(BAR_SECONDS, view.span);
+                select(view.symbol);
+                play.textContent = 'Pause';
+                requestAnimationFrame(() => requestAnimationFrame(paintSignals));
+            });
+        </script>
+    </body>
+</html>

@@ -1,0 +1,5 @@
+vendor/
+node_modules/
+next/
+watch.mjs
+jitter.mjs
