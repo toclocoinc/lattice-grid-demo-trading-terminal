@@ -8,7 +8,7 @@
             // Where the library comes from. `false` loads the published release from the CDN;
             // `true` loads a local build from vendor/ instead, for trying an unreleased fix.
             const LOCAL = false;
-            const LIB = LOCAL ? 'vendor/' : 'https://cdn.jsdelivr.net/npm/@toclocoinc/lattice-grid@1.73.0/';
+            const LIB = LOCAL ? 'vendor/' : 'https://cdn.jsdelivr.net/npm/@toclocoinc/lattice-grid@1.74.0/';
             document.write('<link rel="stylesheet" href="' + LIB + 'lattice-grid.min.css">');
             for (const file of ['lattice-grid.min.js', 'modules/layout.min.js', 'modules/data-router.min.js',
                 'modules/charts.min.js', 'modules/kpi.min.js']) {
@@ -74,11 +74,10 @@
             .top__funds .lat-kpi__value { font-size: 13px; font-weight: 600; }
             .top__funds .lat-kpi__label { font-size: 10px; }
 
-            /* The price panel: candles over volume, one pane, with the readout drawn over it
-               and 44px of empty gutter on the left for the annotation rail (card 1474). */
+            /* The price panel: candles over volume, one chart (card 1468), with the readout
+               drawn over it and 44px of empty gutter on the left for the annotation rail (card 1474). */
             .price { display: flex; flex-direction: column; gap: 0; padding-left: 44px; }
-            .price__candles { flex: 3 1 0; min-height: 0; }
-            .price__volume { flex: 1 1 0; min-height: 0; }
+            .price__candles { flex: 1 1 0; min-height: 0; }
             .price__read { position: absolute; left: 100px; top: 2px; z-index: 2; pointer-events: none;
                            font-size: 11px; font-variant-numeric: tabular-nums; display: flex; gap: 12px; align-items: baseline; }
             .price__read .sym { font-size: 13px; font-weight: 700; }
@@ -258,14 +257,6 @@
                     return b;
                 });
             };
-            /** A stable top for the volume axis: the window's peak rounded up to a step, so
-                a candle rolling off does not rescale every bar and reflow the axis gutter. */
-            const STEPS = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
-            const niceMax = (v) => {
-                if (!(v > 0)) return 1;
-                const e = Math.pow(10, Math.floor(Math.log10(v)));
-                return (STEPS.find((x) => (v / e) <= x) || 10) * e;
-            };
             /** A price as the terminal prints it, with a true minus sign. */
             const price = (v) => (v === undefined || v === null ? '-'
                 : v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 5 }).replace('-', '−'));
@@ -328,7 +319,7 @@
             const grids = [];
             const charts = [];
             const data = TradingData.create({ dataDir: 'data' });          // built BEFORE any attach
-            const view = { symbol: data.tickers[0], span: START_RANGE * 60000, theme: 'dark', top: 0 };
+            const view = { symbol: data.tickers[0], span: START_RANGE * 60000, theme: 'dark' };
             data.tickers.forEach((t, i) => { TINT[t] = hue(i); });
 
             LatticeGridLayout.createLayout(document.getElementById('container'), {
@@ -382,47 +373,33 @@
             list('active', 'Most active', { mode: 'derived', from: summary, sort: [{ col: 'volume', dir: 'desc' }], limit: 10 },
                 [{ field: 'volume', title: 'Vol', headerControls: 'none', type: 'number', format: { decimals: 0, notation: 'compact' }, layout: { width: 58 } }]);
 
-            // 4. The price pane: ONE rolled row set, candles over volume with no gap, the
-            //    readout drawn over the plot, and 44px of gutter kept clear on the left.
+            // 4. The price pane: ONE rolled row set, ONE chart - candles over a volume pane on
+            //    one x axis - the readout drawn over the plot, and 44px of gutter kept clear on the left.
             body('price').className = 'panel';
             body('price').innerHTML = '<div class="panel__body price">'
                 + '<div class="price__read"><span class="sym"></span><span><b>O</b><i></i></span><span><b>H</b><i></i></span>'
                 + '<span><b>L</b><i></i></span><span><b>C</b><i></i></span><span><b>Vol</b><i></i></span></div>'
-                + '<div class="price__candles"></div><div class="price__volume"></div></div>';
+                + '<div class="price__candles"></div></div>';
             // The feed publishes the selected ticker resampled to the interval the range
             // needs and keeps exactly that window, so a slot arrives - and the oldest
             // leaves - several times a second and the pane slides instead of re-labelling.
             const main = grid(null, { rowKey: 'id', columns: CANDLE_COLUMNS('HH:mm') });
             data.router.attach(main, 'bar', { sort: { key: 'at', dir: 'asc' } });   // attach BEFORE start()
-            /** The domain both panes show: a rolling window ending at the REPLAY clock.
-                The price pane draws no time labels: the pair shares one time axis, at the
-                bottom under the volume bars, which is where a terminal reads it.
+            /** The pane's domain: a rolling window ending at the REPLAY clock
                 (1483's `window.now`), re-read on each `update` so the pane pans per tick.
+                The chart draws its one time axis under the volume bars (1468).
                 `format` is given because a continuous axis labels in the viewer's own zone
                 and this session is UTC (1484). */
             const domain = (extra) => Object.assign({ scale: 'time', ticks: 8, format: hhmm,
                 window: { kind: 'time', span: view.span, now: () => data.replay.now() } }, extra);
             const candlestick = chart({ grid: main, container: document.querySelector('.price__candles'), type: 'candlestick', x: 'at',
                 measures: [{ col: 'open', fn: 'last' }, { col: 'high', fn: 'max' }, { col: 'low', fn: 'min' }, { col: 'close', fn: 'last' }],
-                axis: { x: domain({ labels: false }), y: { position: 'right' } } });
-            const volume = chart({ grid: main, container: document.querySelector('.price__volume'), type: 'bar', x: 'at', y: 'volume', series: 'dir',
-                stack: true, axis: { x: domain(), y: { min: 0, max: 1, position: 'right' } },
-                scheme: { up: '#2ea043', down: '#f85149' }, legend: false, margin: { top: 2, bottom: 2 } });
+                volume: 'volume', volumePane: { height: 0.25 },
+                axis: { x: domain(), y: { position: 'right' } } });
 
-            /** Pan both panes to the clock, and keep the volume axis's own scale still. */
+            /** Pan the pane - price and volume together - to the clock. */
             const reslice = () => {
-                candlestick.update({ axis: { x: domain({ labels: false }), y: { position: 'right' } } });
-                volume.update({ axis: { x: domain(), y: { min: 0, max: view.top || 1, position: 'right' } } });
-                let peak = 0;
-                for (let i = 0; i < main.rows.count(); i += 1) {
-                    const v = Number(main.rows.get(i).data.volume) || 0;
-                    if (v > peak) peak = v;
-                }
-                const top = niceMax(peak);
-                if (top !== view.top) {
-                    view.top = top;
-                    volume.update({ axis: { x: domain(), y: { min: 0, max: top, position: 'right' } } });
-                }
+                candlestick.update({ axis: { x: domain(), y: { position: 'right' } } });
             };
 
             // 5. The bottom row: peers and the spread heatmap, equal halves.
